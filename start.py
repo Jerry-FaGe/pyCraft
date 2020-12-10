@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 
+import ujson
 import getpass
 import sys
 import re
+from datetime import datetime
 from optparse import OptionParser
 
 from minecraft import authentication
@@ -74,7 +76,7 @@ def main():
         except YggdrasilError as e:
             print(e)
             sys.exit()
-        print("Logged in as %s..." % auth_token.username)
+        print("Logged in as %s..." % auth_token.profile.name)
         connection = Connection(
             options.address, options.port, auth_token=auth_token)
 
@@ -104,8 +106,47 @@ def main():
         handle_join_game, clientbound.play.JoinGamePacket)
 
     def print_chat(chat_packet):
-        print("Message (%s): %s" % (
-            chat_packet.field_string('position'), chat_packet.json_data))
+        js = ujson.loads(chat_packet.json_data)
+        if len(js) == 1 and js.get('text'):
+            js['translate'] = "MCDR"
+            js['with'] = [0, 0, 0]
+        try:
+            translate = js['translate']
+            msg = js['with'][-1]
+            if type(msg) is dict:
+                msg = msg['text']  # 1.15.2 server
+            message = '[{} {}] '.format(datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                        chat_packet.field_string('position'))
+            try:
+                name = js['with'][0]['insertion']
+            except:
+                name = None
+            if translate == 'chat.type.announcement':  # from server
+                message += '[Server] {}'.format(msg)
+            elif translate == 'chat.type.text':  # chat
+                message += '<{}> {}'.format(name, msg)
+                try:
+                    uuid = js['with'][0]['hoverEvent']['contents']['id']  # 1.16 server
+                except:
+                    try:
+                        text = js['with'][0]['hoverEvent']['value']['text']
+                    except TypeError:  # 1.15.2 server
+                        text = js['with'][0]['hoverEvent']['value'][0]['text']
+                    uuid = text[text.find(',id:"'):].split('"')[1]
+            elif translate == 'commands.message.display.incoming':  # tell
+                message += '<{}>(tell) {}'.format(name, msg['text'])
+            elif translate in ['multiplayer.player.joined', 'multiplayer.player.left']:  # login in/out game
+                message += '{} {} the game'.format(name, translate.split('.')[2])
+            elif translate == 'chat.type.emote':  # me
+                message += '* {} {}'.format(name, msg)
+            elif translate == 'MCDR':
+                message += js.get('text')
+            else:
+                message = chat_packet.json_data
+            print(message)
+        except:
+            print('Cannot resolve chat json data: \n    {}'.format(chat_packet.json_data))
+            pass
 
     connection.register_packet_listener(
         print_chat, clientbound.play.ChatMessagePacket)
